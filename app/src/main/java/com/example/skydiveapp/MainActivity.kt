@@ -69,7 +69,7 @@ private fun SkyDiveApp() {
             scope.launch { withContext(Dispatchers.IO) { try { auth.signOut(current) } catch (_: Exception) { } }; session = null }
         }
     }
-    if (passwordCopyError != null) AlertDialog(onDismissRequest = { passwordCopyError = null }, title = { Text("Не получилось сохранить пароль") }, text = { Text(passwordCopyError!!) }, confirmButton = { TextButton(onClick = { passwordCopyError = null }) { Text("Понятно") } })
+    if (passwordCopyError != null) AlertDialog(onDismissRequest = { passwordCopyError = null }, title = { Text("Не получилось к сожаланию") }, text = { Text(passwordCopyError!!) }, confirmButton = { TextButton(onClick = { passwordCopyError = null }) { Text("Понятно") } })
 }
 
 @Composable
@@ -85,7 +85,7 @@ private fun MainContent(email: String, auth: SupabaseAuth, onSignOut: () -> Unit
     LaunchedEffect(reload) {
         loading = true
         try { val data = withContext(Dispatchers.IO) { store.list() to store.loadChecks(checks.size) }; jumps.clear(); jumps.addAll(data.first); data.second.forEachIndexed { i, value -> checked[i] = value }; cloudError = null }
-        catch (e: Exception) { cloudError = if (e is AuthException) e.message else "Не получилось загрузить журнал. Проверь интернет" }
+        catch (e: Exception) { cloudError = if (e is AuthException) e.message else "шо то не грузит, интернет ты свой проверь, а то оно не функционирует" }
         finally { loading = false }
     }
     var tab by remember { mutableIntStateOf(0) }
@@ -96,7 +96,7 @@ private fun MainContent(email: String, auth: SupabaseAuth, onSignOut: () -> Unit
         saving = true
         scope.launch {
             try { withContext(Dispatchers.IO) { store.saveChecks(values) }; values.forEachIndexed { i, value -> checked[i] = value }; cloudError = null }
-            catch (e: Exception) { cloudError = if (e is AuthException) e.message else "Не получилось сохранить чек-лист. Проверь интернет" }
+            catch (e: Exception) { cloudError = if (e is AuthException) e.message else "Чеклист не сохраняется, вайфай сеть всемирная паутина не работает" }
             finally { saving = false }
         }
     }
@@ -124,11 +124,11 @@ private fun MainContent(email: String, auth: SupabaseAuth, onSignOut: () -> Unit
     if (showAdd) JumpDialog(onDismiss = { if (!saving) showAdd = false }, saving = saving, error = cloudError, onSave = { date, location, altitude, discipline, notes ->
         if (!saving) { saving = true; cloudError = null; scope.launch {
             try { val jump = Jump(java.util.UUID.randomUUID().toString(), date, location, altitude, discipline, notes); val saved = withContext(Dispatchers.IO) { store.add(jump) }; jumps.add(0, saved); showAdd = false; tab = 1 }
-            catch (e: Exception) { cloudError = if (e is AuthException) e.message else "Не получилось сохранить прыжок. Проверь интернет" }
+            catch (e: Exception) { cloudError = if (e is AuthException) e.message else "прыжок не сохранен, интернет сеть свои проверь" }
             finally { saving = false }
         } }
     })
-    deleteJump?.let { jump -> AlertDialog(onDismissRequest = { deleteJump = null }, title = { Text("Удалить прыжок?") }, text = { Text("Эта запись удалится из аккаунта") }, confirmButton = { TextButton(enabled = !saving, onClick = { saving = true; scope.launch { try { withContext(Dispatchers.IO) { store.delete(jump) }; jumps.remove(jump); deleteJump = null; cloudError = null } catch (e: Exception) { deleteJump = null; cloudError = if (e is AuthException) e.message else "Не получилось удалить прыжок. Проверь интернет" } finally { saving = false } } }) { Text("Удалить") } }, dismissButton = { TextButton(onClick = { deleteJump = null }) { Text("Отмена") } }) }
+    deleteJump?.let { jump -> AlertDialog(onDismissRequest = { deleteJump = null }, title = { Text("Реально удалить прыжок?") }, text = { Text("Эта запись удалится из аккаунта вот это да") }, confirmButton = { TextButton(enabled = !saving, onClick = { saving = true; scope.launch { try { withContext(Dispatchers.IO) { store.delete(jump) }; jumps.remove(jump); deleteJump = null; cloudError = null } catch (e: Exception) { deleteJump = null; cloudError = if (e is AuthException) e.message else "Не получилось удалить прыжок нужно проверить паутину сетевую свою" } finally { saving = false } } }) { Text("Удалить") } }, dismissButton = { TextButton(onClick = { deleteJump = null }) { Text("Отмена") } }) }
 }
 
 @Composable
@@ -151,7 +151,7 @@ private fun HomeScreen(jumps: List<Jump>, done: Int, add: () -> Unit, navigate: 
         Spacer(Modifier.height(25.dp))
         SectionTitle("Снаряжение и инструменты", "БЫСТРЫЙ ДОСТУП")
         Spacer(Modifier.height(12.dp))
-        ActionCard("✓", "Чек-лист снаряжения", "Список для проверки", "ОТКРЫТЬ", { navigate(2) })
+        ActionCard("✓", "Чек лист снаряжения", "Список для проверки", "ОТКРЫТЬ", { navigate(2) })
         Spacer(Modifier.height(10.dp))
         ActionCard("↗", "Инструменты", "Быстро перевести единицы", "ОТКРЫТЬ", { navigate(3) })
         Spacer(Modifier.height(25.dp))
