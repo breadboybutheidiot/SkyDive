@@ -6,6 +6,9 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 internal data class Jump(val id: String, val date: String, val location: String, val altitude: String, val discipline: String, val notes: String)
+internal data class Profile(val name: String, val photo: String?)
+internal data class ChatMessage(val id: String, val authorId: String?, val body: String, val createdAt: String)
+internal data class ChatAuthor(val id: String, val name: String, val photo: String?)
 
 internal class JumpStore(private val auth: SupabaseAuth) {
     private fun request(method: String, query: String, body: JSONObject? = null, table: String = "jumps", upsert: Boolean = false): String {
@@ -23,7 +26,19 @@ internal class JumpStore(private val auth: SupabaseAuth) {
             if (body != null) connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val status = connection.responseCode
             val result = (if (status in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
-            if (status !in 200..299) throw AuthException(if (status == 401) "Сессия закончилась, войди заново" else "Не получилось загрузить журнал (код $status). Проверь таблицу в Supabase")
+            if (status !in 200..299) {
+                val code = try { JSONObject(result).optString("code") } catch (_: Exception) { "" }
+                val message = when {
+                    status == 401 -> "Сессия закончилась, войди заново"
+                    table == "skydiver_profiles" && code == "PGRST205" -> "Профиль пока не настроен. Обратись к разработчику"
+                    table == "skydiver_profiles" && status == 403 -> "Нет доступа к профилю"
+                    table == "skydiver_profiles" -> "Не получилось открыть профиль (код $status)"
+                    (table == "chat_messages" || table == "rpc/chat_profiles") && code in listOf("PGRST202", "PGRST205") -> "Чат пока не настроен"
+                    table == "chat_messages" || table == "rpc/chat_profiles" -> "Не получилось подключиться к чату (код $status)"
+                    else -> "Не получилось загрузить журнал (код $status). Проверь таблицу в Supabase"
+                }
+                throw AuthException(message)
+            }
             return result
         } finally { connection.disconnect() }
     }
@@ -34,6 +49,35 @@ internal class JumpStore(private val auth: SupabaseAuth) {
         return parse(JSONArray(request("POST", "", body)).getJSONObject(0))
     }
     fun delete(jump: Jump) { val rows = JSONArray(request("DELETE", "?id=eq.${jump.id}&select=id")); if (rows.length() != 1) throw AuthException("Не получилось удалить запись. Обнови журнал и попробуй снова") }
+    fun loadProfile(): Profile? {
+        val rows = JSONArray(request("GET", "?select=display_name,photo_base64", table = "skydiver_profiles"))
+        if (rows.length() == 0) return null
+        val item = rows.getJSONObject(0)
+        return Profile(item.optString("display_name"), item.optString("photo_base64").takeIf { !item.isNull("photo_base64") && it.isNotBlank() })
+    }
+    fun saveProfile(profile: Profile) {
+        val body = JSONObject().put("display_name", profile.name).put("photo_base64", profile.photo ?: JSONObject.NULL)
+        val rows = JSONArray(request("POST", "?on_conflict=user_id", body, "skydiver_profiles", true))
+        if (rows.length() != 1) throw AuthException("Не получилось сохранить профиль")
+    }
+    fun loadMessages(): List<ChatMessage> {
+        val rows = JSONArray(request("GET", "?select=id,author_id,body,created_at&order=created_at.desc,id.desc&limit=50", table = "chat_messages"))
+        return (0 until rows.length()).map { index ->
+            val item = rows.getJSONObject(index)
+            ChatMessage(item.getString("id"), if (item.isNull("author_id")) null else item.optString("author_id"), item.getString("body"), item.getString("created_at"))
+        }.reversed()
+    }
+    fun loadChatAuthors(ids: Set<String>): Map<String, ChatAuthor> {
+        if (ids.isEmpty()) return emptyMap()
+        val rows = JSONArray(request("POST", "", JSONObject().put("author_ids", JSONArray(ids.toList())), table = "rpc/chat_profiles"))
+        return (0 until rows.length()).map { index ->
+            val item = rows.getJSONObject(index)
+            ChatAuthor(item.getString("user_id"), item.optString("display_name", "Участник"), if (item.isNull("photo_base64")) null else item.optString("photo_base64"))
+        }.associateBy { it.id }
+    }
+    fun sendMessage(body: String) {
+        request("POST", "", JSONObject().put("body", body), table = "chat_messages")
+    }
     fun loadChecks(count: Int): List<Boolean> {
         val rows = JSONArray(request("GET", "?select=checked", table = "equipment_checklists"))
         if (rows.length() == 0) return List(count) { false }

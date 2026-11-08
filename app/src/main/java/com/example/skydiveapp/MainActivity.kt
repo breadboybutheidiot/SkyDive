@@ -2,6 +2,7 @@ package com.example.skydiveapp
 
 import android.os.Bundle
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -26,6 +27,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -79,31 +84,22 @@ private fun MainContent(email: String, auth: SupabaseAuth, onSignOut: () -> Unit
     val scope = rememberCoroutineScope()
     var loading by remember { mutableStateOf(true) }
     var saving by remember { mutableStateOf(false) }
+    var jumpsAvailable by remember { mutableStateOf(false) }
     var cloudError by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
-    val checked = remember { mutableStateListOf<Boolean>().apply { checks.indices.forEach { add(false) } } }
     LaunchedEffect(reload) {
         loading = true
-        try { val data = withContext(Dispatchers.IO) { store.list() to store.loadChecks(checks.size) }; jumps.clear(); jumps.addAll(data.first); data.second.forEachIndexed { i, value -> checked[i] = value }; cloudError = null }
-        catch (e: Exception) { cloudError = if (e is AuthException) e.message else "шо то не грузит, интернет ты свой проверь, а то оно не функционирует" }
+        try { val data = withContext(Dispatchers.IO) { store.list() }; jumps.clear(); jumps.addAll(data); jumpsAvailable = true; cloudError = null }
+        catch (e: Exception) { jumpsAvailable = false; cloudError = if (e is AuthException) e.message else "шо то не грузит, интернет ты свой проверь, а то оно не функционирует" }
         finally { loading = false }
     }
     var tab by remember { mutableIntStateOf(0) }
     var showAdd by remember { mutableStateOf(false) }
     var deleteJump by remember { mutableStateOf<Jump?>(null) }
-    fun saveChecklist(values: List<Boolean>) {
-        if (saving || loading) return
-        saving = true
-        scope.launch {
-            try { withContext(Dispatchers.IO) { store.saveChecks(values) }; values.forEachIndexed { i, value -> checked[i] = value }; cloudError = null }
-            catch (e: Exception) { cloudError = if (e is AuthException) e.message else "Чеклист не сохраняется, вайфай сеть всемирная паутина не работает" }
-            finally { saving = false }
-        }
-    }
     Scaffold(containerColor = Paper, bottomBar = {
         Surface(color = Color(0xFFF0EFF6), shadowElevation = 0.dp) {
             Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(top = 8.dp, bottom = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                listOf("⌂" to "Главная", "▤" to "Журнал", "✓" to "Чек-лист", "◇" to "Инструменты").forEachIndexed { index, item ->
+                listOf("⌂" to "Главная", "▤" to "Журнал", "◇" to "Инструменты", "✉" to "Чат", "○" to "Профиль").forEachIndexed { index, item ->
                     Column(Modifier.weight(1f).clickable { tab = index }.padding(vertical = 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Box(Modifier.width(40.dp).height(5.dp).clip(RoundedCornerShape(8.dp)).background(if (tab == index) Color(0xFFDCE2FA) else Color.Transparent))
                         Text(item.second, color = if (tab == index) Teal else Muted, fontSize = 10.sp, fontWeight = if (tab == index) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
@@ -113,10 +109,11 @@ private fun MainContent(email: String, auth: SupabaseAuth, onSignOut: () -> Unit
         }
     }) { padding ->
         when (tab) {
-            0 -> HomeScreen(jumps, checked.count { it }, { showAdd = true }, { tab = it }, email, onSignOut, Modifier.padding(padding))
+            0 -> HomeScreen(jumps, { showAdd = true }, { tab = it }, Modifier.padding(padding))
             1 -> JournalScreen(jumps, { showAdd = true }, { deleteJump = it }, Modifier.padding(padding))
-            2 -> ChecklistScreen(checked, { i, value -> saveChecklist(checked.toList().mapIndexed { index, old -> if (index == i) value else old }) }, { saveChecklist(List(checks.size) { false }) }, Modifier.padding(padding))
-            3 -> ToolsScreen(Modifier.padding(padding))
+            2 -> ToolsScreen(Modifier.padding(padding))
+            3 -> ChatScreen(store, Modifier.padding(padding))
+            4 -> ProfileScreen(store, jumps, jumpsAvailable, email.substringBefore('@'), onSignOut, Modifier.padding(padding))
         }
     }
     if (cloudError != null && !showAdd && deleteJump == null) AlertDialog(onDismissRequest = { cloudError = null }, title = { Text("Не получилось") }, text = { Text(cloudError!!) }, confirmButton = { TextButton(onClick = { cloudError = null; reload++ }) { Text("Попробовать снова") } }, dismissButton = { TextButton(onClick = { cloudError = null }) { Text("Закрыть") } })
@@ -132,7 +129,7 @@ private fun MainContent(email: String, auth: SupabaseAuth, onSignOut: () -> Unit
 }
 
 @Composable
-private fun HomeScreen(jumps: List<Jump>, done: Int, add: () -> Unit, navigate: (Int) -> Unit, email: String, onSignOut: () -> Unit, modifier: Modifier = Modifier) {
+private fun HomeScreen(jumps: List<Jump>, add: () -> Unit, navigate: (Int) -> Unit, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 8.dp)) {
         Spacer(Modifier.height(20.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
@@ -146,21 +143,19 @@ private fun HomeScreen(jumps: List<Jump>, done: Int, add: () -> Unit, navigate: 
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             StatCard("ПРЫЖКОВ", jumps.size.toString(), "в журнале", Modifier.weight(1f))
-            StatCard("ПРОВЕРЕНО", "$done / ${checks.size}", "пунктов из списка", Modifier.weight(1f))
+            StatCard("МЕСТ", jumps.map { it.location.trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }.distinct().size.toString(), "дропзон", Modifier.weight(1f))
         }
         Spacer(Modifier.height(25.dp))
-        SectionTitle("Снаряжение и инструменты", "БЫСТРЫЙ ДОСТУП")
+        SectionTitle("Разделы", "БЫСТРЫЙ ДОСТУП")
         Spacer(Modifier.height(12.dp))
-        ActionCard("✓", "Чек лист снаряжения", "Список для проверки", "ОТКРЫТЬ", { navigate(2) })
+        ActionCard("○", "Профиль", "Фото и личная статистика", "ОТКРЫТЬ", { navigate(4) })
         Spacer(Modifier.height(10.dp))
-        ActionCard("↗", "Инструменты", "Быстро перевести единицы", "ОТКРЫТЬ", { navigate(3) })
+        ActionCard("↗", "Инструменты", "Быстро перевести единицы", "ОТКРЫТЬ", { navigate(2) })
         Spacer(Modifier.height(25.dp))
         SectionTitle("Крайний прыжок", "ЖУРНАЛ", { navigate(1) })
         Spacer(Modifier.height(12.dp))
         if (jumps.isEmpty()) EmptyCard("Прыжков пока нет", "Добавь запись о прыжке") else JumpCard(jumps.first(), null)
         Spacer(Modifier.height(24.dp))
-        Text("Аккаунт: ${email.removeSuffix("@owfsmpsqbwsguejtnyng.supabase.co").removeSuffix("@users.skydive.example")}", color = Muted, fontSize = 12.sp)
-        TextButton(onClick = onSignOut) { Text("Выйти из аккаунта") }
         Spacer(Modifier.height(16.dp))
     }
 }
@@ -204,6 +199,8 @@ private fun HeroCard(count: Int, add: () -> Unit) {
 @Composable
 private fun AuthScreen(auth: SupabaseAuth, onSuccess: (AuthSession, String?) -> Unit) {
     var register by remember { mutableStateOf(false) }
+    var passwordVisible by remember(register) { mutableStateOf(false) }
+    var confirmationVisible by remember(register) { mutableStateOf(false) }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var confirmPassword by remember { mutableStateOf("") }
@@ -219,10 +216,10 @@ private fun AuthScreen(auth: SupabaseAuth, onSuccess: (AuthSession, String?) -> 
         Spacer(Modifier.height(24.dp))
         OutlinedTextField(username, { username = it; error = null }, label = { Text("Логин") }, modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !busy, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii), supportingText = { Text("От 3 до 24 символов: латинские буквы, цифры и подчёркивание") }, shape = RoundedCornerShape(11.dp))
         Spacer(Modifier.height(10.dp))
-        OutlinedTextField(password, { password = it; error = null }, label = { Text("Пароль") }, modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !busy, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), shape = RoundedCornerShape(11.dp))
+        OutlinedTextField(password, { password = it; error = null }, label = { Text("Пароль") }, modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !busy, visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { PasswordVisibilityButton(passwordVisible) { passwordVisible = !passwordVisible } }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), shape = RoundedCornerShape(11.dp))
         if (register) {
             Spacer(Modifier.height(10.dp))
-            OutlinedTextField(confirmPassword, { confirmPassword = it; error = null }, label = { Text("Повтори пароль") }, modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !busy, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), shape = RoundedCornerShape(11.dp))
+            OutlinedTextField(confirmPassword, { confirmPassword = it; error = null }, label = { Text("Повтори пароль") }, modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = !busy, visualTransformation = if (confirmationVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { PasswordVisibilityButton(confirmationVisible) { confirmationVisible = !confirmationVisible } }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), shape = RoundedCornerShape(11.dp))
         }
         if (error != null) { Spacer(Modifier.height(10.dp)); Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
         Spacer(Modifier.height(18.dp))
@@ -247,5 +244,26 @@ private fun AuthScreen(auth: SupabaseAuth, onSuccess: (AuthSession, String?) -> 
             }
         }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(11.dp)) { Text(if (busy) "Загрузка..." else if (register) "Зарегистрироваться" else "Войти") }
         TextButton(onClick = { register = !register; confirmPassword = ""; error = null }, enabled = !busy, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text(if (register) "Уже есть аккаунт? Войти" else "Нет аккаунта? Зарегистрироваться") }
+    }
+}
+
+@Composable
+private fun PasswordVisibilityButton(visible: Boolean, onClick: () -> Unit) {
+    val description = if (visible) "Скрыть пароль" else "Показать пароль"
+    IconButton(onClick = onClick, modifier = Modifier.semantics { contentDescription = description }) {
+        Canvas(Modifier.size(24.dp)) {
+            val eye = Path().apply {
+                moveTo(size.width * 0.08f, size.height * 0.5f)
+                cubicTo(size.width * 0.3f, size.height * 0.16f, size.width * 0.7f, size.height * 0.16f, size.width * 0.92f, size.height * 0.5f)
+                cubicTo(size.width * 0.7f, size.height * 0.84f, size.width * 0.3f, size.height * 0.84f, size.width * 0.08f, size.height * 0.5f)
+                close()
+            }
+            val stroke = 1.8.dp.toPx()
+            drawPath(eye, color = Muted, style = Stroke(width = stroke))
+            drawCircle(Muted, radius = size.width * 0.13f, style = Stroke(width = stroke))
+            if (!visible) {
+                drawLine(Muted, Offset(size.width * 0.16f, size.height * 0.16f), Offset(size.width * 0.84f, size.height * 0.84f), strokeWidth = stroke, cap = StrokeCap.Round)
+            }
+        }
     }
 }
