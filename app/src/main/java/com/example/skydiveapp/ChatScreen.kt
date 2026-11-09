@@ -39,18 +39,28 @@ private val ChatCard = Color(0xFFE2E2EC)
 private val ChatAccent = Color(0xFF454A65)
 
 @Composable
-internal fun ChatScreen(store: JumpStore, modifier: Modifier = Modifier) {
+internal fun ChatScreen(store: JumpStore, model: AppSessionViewModel, modifier: Modifier = Modifier) {
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var authors by remember { mutableStateOf<Map<String, ChatAuthor>>(emptyMap()) }
     var loaded by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var draft by remember { mutableStateOf("") }
-    var sending by remember { mutableStateOf(false) }
+    var draft by model::chatDraft
+    var sending by model::chatSending
+    var sendError by model::chatSendError
+    var cooldownEnd by model::chatCooldownEnd
+    var secondsLeft by remember { mutableIntStateOf(0) }
     var scrollAfterSend by remember { mutableStateOf(false) }
     var refresh by remember { mutableIntStateOf(0) }
     var selectedAuthor by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
+    val scope = model.scope
+
+    LaunchedEffect(cooldownEnd) {
+        do {
+            secondsLeft = ((cooldownEnd - SystemClock.elapsedRealtime() + 999L) / 1000L).coerceAtLeast(0L).toInt()
+            if (secondsLeft > 0) delay(250)
+        } while (secondsLeft > 0)
+    }
 
     LaunchedEffect(refresh) {
         var lastProfileUpdate = 0L
@@ -91,25 +101,31 @@ internal fun ChatScreen(store: JumpStore, modifier: Modifier = Modifier) {
             Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp, modifier = Modifier.padding(vertical = 4.dp))
             TextButton(onClick = { refresh++ }) { Text("Обновить") }
         }
+        if (sendError != null) Text(sendError!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp, modifier = Modifier.padding(vertical = 4.dp))
+        if (secondsLeft > 0) Text("Следующее сообщение через $secondsLeft с", color = ChatMuted, fontSize = 12.sp)
         Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(value = draft, onValueChange = { if (it.length <= 500) draft = it }, modifier = Modifier.weight(1f), label = { Text("Сообщение") }, enabled = !sending, maxLines = 4, shape = RoundedCornerShape(11.dp))
             Button(onClick = {
                 val text = draft.trim()
                 if (text.isNotEmpty() && !sending) {
                     sending = true
+                    sendError = null
                     scope.launch {
                         try {
                             withContext(Dispatchers.IO) { store.sendMessage(text) }
                             draft = ""
-                            error = null
+                            sendError = null
+                            cooldownEnd = SystemClock.elapsedRealtime() + 10_000L
                             scrollAfterSend = true
                             refresh++
                         } catch (e: CancellationException) { throw e }
-                        catch (_: Exception) { error = "Не удалось подтвердить отправку. Проверь чат перед повторной попыткой" }
+                        catch (e: ChatCooldownException) { cooldownEnd = SystemClock.elapsedRealtime() + e.seconds * 1000L; sendError = null }
+                        catch (e: AuthException) { sendError = e.message }
+                        catch (_: Exception) { sendError = "Не удалось подтвердить отправку. Проверь чат перед повторной попыткой" }
                         finally { sending = false }
                     }
                 }
-            }, enabled = !sending && draft.isNotBlank(), shape = RoundedCornerShape(11.dp), contentPadding = PaddingValues(horizontal = 12.dp)) { Text(if (sending) "..." else "Отправить") }
+            }, enabled = !sending && secondsLeft == 0 && draft.isNotBlank(), shape = RoundedCornerShape(11.dp), contentPadding = PaddingValues(horizontal = 12.dp)) { Text(if (sending) "..." else "Отправить") }
         }
     }
     selectedAuthor?.let { authorId -> ChatProfileDialog(store, authorId) { selectedAuthor = null } }

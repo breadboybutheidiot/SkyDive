@@ -10,6 +10,7 @@ internal data class Profile(val name: String, val photo: String?)
 internal data class ChatMessage(val id: String, val authorId: String?, val body: String, val createdAt: String)
 internal data class ChatAuthor(val id: String, val name: String, val photo: String?)
 internal data class PublicProfile(val name: String, val photo: String?, val jumpCount: Long, val freefallSeconds: Long?)
+internal class ChatCooldownException(val seconds: Int) : Exception()
 
 internal class JumpStore(private val auth: SupabaseAuth) {
     private fun request(method: String, query: String, body: JSONObject? = null, table: String = "jumps", upsert: Boolean = false): String {
@@ -34,8 +35,8 @@ internal class JumpStore(private val auth: SupabaseAuth) {
                     table == "skydiver_profiles" && code == "PGRST205" -> "Профиль пока не настроен. Обратись к разработчику"
                     table == "skydiver_profiles" && status == 403 -> "Нет доступа к профилю"
                     table == "skydiver_profiles" -> "Не получилось открыть профиль (код $status)"
-                    (table == "chat_messages" || table == "rpc/chat_profiles") && code in listOf("PGRST202", "PGRST205") -> "Чат пока не настроен"
-                    table == "chat_messages" || table == "rpc/chat_profiles" -> "Не получилось подключиться к чату (код $status)"
+                    (table == "chat_messages" || table == "rpc/chat_profiles" || table == "rpc/send_chat_message") && code in listOf("PGRST202", "PGRST205") -> "Чат пока не настроен"
+                    table == "chat_messages" || table == "rpc/chat_profiles" || table == "rpc/send_chat_message" -> "Не получилось подключиться к чату (код $status)"
                     else -> "Не получилось загрузить журнал (код $status). Проверь таблицу в Supabase"
                 }
                 throw AuthException(message)
@@ -83,7 +84,8 @@ internal class JumpStore(private val auth: SupabaseAuth) {
         }.associateBy { it.id }
     }
     fun sendMessage(body: String) {
-        request("POST", "", JSONObject().put("body", body), table = "chat_messages")
+        val result = JSONObject(request("POST", "", JSONObject().put("message_body", body), table = "rpc/send_chat_message"))
+        if (!result.optBoolean("ok", false)) throw ChatCooldownException(result.optInt("wait_seconds", 10).coerceIn(1, 10))
     }
     fun loadPublicProfile(authorId: String): PublicProfile {
         val rows = JSONArray(request("POST", "", JSONObject().put("profile_user_id", authorId), table = "rpc/chat_public_profile"))

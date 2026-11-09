@@ -40,11 +40,12 @@ private val ProfileCard = Color(0xFFE2E2EC)
 private val ProfileAccent = Color(0xFF454A65)
 
 @Composable
-internal fun ProfileScreen(store: JumpStore, jumps: List<Jump>, statsAvailable: Boolean, login: String, onSignOut: () -> Unit, modifier: Modifier = Modifier) {
+internal fun ProfileScreen(store: JumpStore, jumps: List<Jump>, statsAvailable: Boolean, login: String, model: AppSessionViewModel, onSignOut: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var name by remember { mutableStateOf(login) }
-    var photo by remember { mutableStateOf<String?>(null) }
+    val draft = remember { model.profileDraft ?: ProfileDraft(login).also { model.profileDraft = it } }
+    var name by draft::name
+    var photo by draft::photo
     var initial by remember { mutableStateOf<Profile?>(null) }
     var loading by remember { mutableStateOf(true) }
     var saving by remember { mutableStateOf(false) }
@@ -58,8 +59,7 @@ internal fun ProfileScreen(store: JumpStore, jumps: List<Jump>, statsAvailable: 
         error = null
         try {
             val profile = withContext(Dispatchers.IO) { store.loadProfile() } ?: Profile(login, null)
-            name = profile.name
-            photo = profile.photo
+            if (!draft.dirty) { name = profile.name; photo = profile.photo }
             initial = profile
         } catch (e: Exception) {
             error = if (e is AuthException) e.message else "Не получилось загрузить профиль. Проверь интернет и попробуй снова"
@@ -71,7 +71,7 @@ internal fun ProfileScreen(store: JumpStore, jumps: List<Jump>, statsAvailable: 
             picking = true
             error = null
             scope.launch {
-                try { photo = withContext(Dispatchers.IO) { readProfilePhoto(context, uri) }; message = null }
+                try { photo = withContext(Dispatchers.IO) { readProfilePhoto(context, uri) }; draft.dirty = true; message = null }
                 catch (_: Exception) { error = "Не получилось открыть фото. Попробуй выбрать другое" }
                 finally { picking = false }
             }
@@ -98,9 +98,9 @@ internal fun ProfileScreen(store: JumpStore, jumps: List<Jump>, statsAvailable: 
                 else Text(name.trim().firstOrNull()?.uppercase() ?: "?", color = ProfileAccent, fontSize = 36.sp)
             }
             TextButton(onClick = { picker.launch("image/*") }, enabled = !isBusy && initial != null) { Text(if (photo == null) "Добавить фото" else "Изменить фото") }
-            if (photo != null) TextButton(onClick = { photo = null; message = null }, enabled = !isBusy && initial != null) { Text("Удалить фото") }
+            if (photo != null) TextButton(onClick = { photo = null; draft.dirty = true; message = null }, enabled = !isBusy && initial != null) { Text("Удалить фото") }
             Spacer(Modifier.height(4.dp))
-            OutlinedTextField(value = name, onValueChange = { if (it.length <= 40) { name = it; message = null } }, label = { Text("Название профиля") }, singleLine = true, enabled = !isBusy && initial != null, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(11.dp))
+            OutlinedTextField(value = name, onValueChange = { if (it.length <= 40) { name = it; draft.dirty = true; message = null } }, label = { Text("Название профиля") }, singleLine = true, enabled = !isBusy && initial != null, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(11.dp))
             Spacer(Modifier.height(12.dp))
             Button(onClick = {
                 val profileName = name.trim()
@@ -109,7 +109,7 @@ internal fun ProfileScreen(store: JumpStore, jumps: List<Jump>, statsAvailable: 
                 error = null
                 scope.launch {
                     val updated = Profile(profileName, photo)
-                    try { withContext(Dispatchers.IO) { store.saveProfile(updated) }; name = updated.name; initial = updated; message = "Сохранено" }
+                    try { withContext(Dispatchers.IO) { store.saveProfile(updated) }; name = updated.name; initial = updated; draft.dirty = false; message = "Сохранено" }
                     catch (e: Exception) { error = if (e is AuthException) e.message else "Не получилось сохранить профиль. Проверь интернет и попробуй снова" }
                     finally { saving = false }
                 }

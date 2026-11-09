@@ -8,6 +8,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.view.WindowCompat
+import androidx.lifecycle.ViewModelProvider
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -53,50 +55,51 @@ private val Orange = Color(0xFF777D9B)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme(colorScheme = lightColorScheme(primary = Teal, background = Paper, surface = Color(0xFFE2E2EC), onSurface = Ink)) { SkyDiveApp() } }
+        WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = true
+        val model = ViewModelProvider(this)[AppSessionViewModel::class.java]
+        setContent { MaterialTheme(colorScheme = lightColorScheme(primary = Teal, background = Paper, surface = Color(0xFFE2E2EC), onSurface = Ink)) { SkyDiveApp(model) } }
     }
 }
 
 private val checks = listOf("Основной парашют", "Запасной парашют", "Прибор безопасности (AAD)", "Высотомер", "Шлем и очки", "Комбинезон и обувь", "Проверка снаряжения с напарником")
 
 @Composable
-private fun SkyDiveApp() {
-    val context = LocalContext.current
-    val auth = remember { SupabaseAuth(context) }
-    var session by remember { mutableStateOf<AuthSession?>(null) }
-    var passwordCopyError by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
+private fun SkyDiveApp(model: AppSessionViewModel) {
+    val auth = model.auth
+    var session by model::session
+    var passwordCopyError by model::passwordCopyError
+    val scope = model.scope
     if (session == null) {
-        AuthScreen(auth) { result, warning -> session = result; passwordCopyError = warning }
+        AuthScreen(auth, model.authForm, model.scope) { result, warning -> session = result; passwordCopyError = warning }
     } else {
-        MainContent(session!!.email, auth) {
+        MainContent(session!!.email, auth, model) {
             val current = session!!
-            scope.launch { withContext(Dispatchers.IO) { try { auth.signOut(current) } catch (_: Exception) { } }; session = null }
+            scope.launch { withContext(Dispatchers.IO) { try { auth.signOut(current) } catch (_: Exception) { } }; model.resetAfterLogout() }
         }
     }
     if (passwordCopyError != null) AlertDialog(onDismissRequest = { passwordCopyError = null }, title = { Text("Не получилось к сожаланию") }, text = { Text(passwordCopyError!!) }, confirmButton = { TextButton(onClick = { passwordCopyError = null }) { Text("Понятно") } })
 }
 
 @Composable
-private fun MainContent(email: String, auth: SupabaseAuth, onSignOut: () -> Unit) {
+private fun MainContent(email: String, auth: SupabaseAuth, model: AppSessionViewModel, onSignOut: () -> Unit) {
     val store = remember { JumpStore(auth) }
-    val jumps = remember { mutableStateListOf<Jump>() }
-    val scope = rememberCoroutineScope()
+    val jumps = model.jumps
+    val scope = model.scope
     var loading by remember { mutableStateOf(true) }
-    var saving by remember { mutableStateOf(false) }
-    var jumpsAvailable by remember { mutableStateOf(false) }
-    var cloudError by remember { mutableStateOf<String?>(null) }
-    var reload by remember { mutableIntStateOf(0) }
+    var saving by model::saving
+    var jumpsAvailable by model::jumpsAvailable
+    var cloudError by model::cloudError
+    var reload by model::reload
     LaunchedEffect(reload) {
         loading = true
         try { val data = withContext(Dispatchers.IO) { store.list() }; jumps.clear(); jumps.addAll(data); jumpsAvailable = true; cloudError = null }
         catch (e: Exception) { jumpsAvailable = false; cloudError = if (e is AuthException) e.message else "шо то не грузит, интернет ты свой проверь, а то оно не функционирует" }
         finally { loading = false }
     }
-    var tab by remember { mutableIntStateOf(0) }
-    var showAdd by remember { mutableStateOf(false) }
-    var editingJump by remember { mutableStateOf<Jump?>(null) }
-    var deleteJump by remember { mutableStateOf<Jump?>(null) }
+    var tab by model::tab
+    var showAdd by model::showAdd
+    var editingJump by model::editingJump
+    var deleteJump by model::deleteJump
     Scaffold(containerColor = Paper, bottomBar = {
         Surface(color = Color(0xFFF0EFF6), shadowElevation = 0.dp) {
             Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(top = 8.dp, bottom = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -110,23 +113,23 @@ private fun MainContent(email: String, auth: SupabaseAuth, onSignOut: () -> Unit
         }
     }) { padding ->
         when (tab) {
-            0 -> HomeScreen(jumps, { showAdd = true }, { tab = it }, Modifier.padding(padding))
-            1 -> JournalScreen(jumps, { cloudError = null; editingJump = null; showAdd = true }, { cloudError = null; editingJump = it }, { deleteJump = it }, Modifier.padding(padding))
+            0 -> HomeScreen(jumps, { model.jumpDraft = JumpDraft(null); showAdd = true }, { tab = it }, Modifier.padding(padding))
+            1 -> JournalScreen(jumps, { cloudError = null; editingJump = null; model.jumpDraft = JumpDraft(null); showAdd = true }, { cloudError = null; editingJump = it; model.jumpDraft = JumpDraft(it) }, { deleteJump = it }, Modifier.padding(padding))
             2 -> ToolsScreen(Modifier.padding(padding))
-            3 -> ChatScreen(store, Modifier.padding(padding))
-            4 -> ProfileScreen(store, jumps, jumpsAvailable, email.substringBefore('@'), onSignOut, Modifier.padding(padding))
+            3 -> ChatScreen(store, model, Modifier.padding(padding))
+            4 -> ProfileScreen(store, jumps, jumpsAvailable, email.substringBefore('@'), model, onSignOut, Modifier.padding(padding))
         }
     }
     if (cloudError != null && !showAdd && editingJump == null && deleteJump == null) AlertDialog(onDismissRequest = { cloudError = null }, title = { Text("Не получилось") }, text = { Text(cloudError!!) }, confirmButton = { TextButton(onClick = { cloudError = null; reload++ }) { Text("Попробовать снова") } }, dismissButton = { TextButton(onClick = { cloudError = null }) { Text("Закрыть") } })
     if (loading) Box(Modifier.fillMaxSize().background(Paper.copy(alpha = 0.6f)), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-    if (showAdd || editingJump != null) JumpDialog(initial = editingJump, onDismiss = { if (!saving) { showAdd = false; editingJump = null; cloudError = null } }, saving = saving, error = cloudError, onSave = { jump ->
+    if ((showAdd || editingJump != null) && model.jumpDraft != null) JumpDialog(initial = editingJump, draft = model.jumpDraft!!, onDismiss = { if (!saving) { showAdd = false; editingJump = null; model.jumpDraft = null; cloudError = null } }, saving = saving, error = cloudError, onSave = { jump ->
         if (!saving) { saving = true; cloudError = null; scope.launch {
             try {
                 val isEdit = editingJump != null
                 val saved = withContext(Dispatchers.IO) { if (isEdit) store.update(jump) else store.add(jump) }
                 if (isEdit) { val index = jumps.indexOfFirst { it.id == saved.id }; if (index >= 0) jumps[index] = saved }
                 else jumps.add(0, saved)
-                showAdd = false; editingJump = null; tab = 1
+                showAdd = false; editingJump = null; model.jumpDraft = null; tab = 1
             }
             catch (e: Exception) { cloudError = if (e is AuthException) e.message else "Не получилось сохранить прыжок. Проверь интернет" }
             finally { saving = false }
@@ -201,16 +204,15 @@ private fun HeroCard(count: Int, add: () -> Unit) {
 @Composable private fun ToolsScreen(modifier: Modifier = Modifier) { var value by remember { mutableStateOf("") }; var selected by remember { mutableIntStateOf(0) }; var reverse by remember { mutableStateOf(false) }; val conversions = listOf(Triple("Высота", "м", "фт"), Triple("Скорость", "м/с", "км/ч"), Triple("Расстояние", "км", "мили")); val factors = listOf(3.280839895, 3.6, 0.621371192); val item = conversions[selected]; val number = value.replace(',', '.').toDoubleOrNull(); val result = number?.let { if (reverse) it / factors[selected] else it * factors[selected] }; Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 8.dp)) { PageHeader("РАСЧЁТЫ", "Инструменты", "Перевод единиц измерения"); SectionTitle("Конвертер", "ПЕРЕВОД ЕДИНИЦ"); Spacer(Modifier.height(12.dp)); Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) { conversions.forEachIndexed { i, conversion -> FilterChip(selected = selected == i, onClick = { selected = i; reverse = false }, label = { Text(conversion.first, fontSize = 12.sp) }, modifier = Modifier.weight(1f)) } }; Spacer(Modifier.height(12.dp)); Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(11.dp)).background(Color(0xFFE2E2EC)).padding(18.dp)) { Text("ИЗ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp); Spacer(Modifier.height(8.dp)); OutlinedTextField(value = value, onValueChange = { value = it }, label = { Text(if (reverse) item.third else item.second) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)); TextButton(onClick = { reverse = !reverse }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("⇅  Поменять местами") }; Text("РЕЗУЛЬТАТ", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp); Spacer(Modifier.height(8.dp)); Text(if (result != null && result.isFinite()) "${String.format(Locale.getDefault(), "%.2f", result)} ${if (reverse) item.second else item.third}" else "Введи число (${if (reverse) item.second else item.third})", color = Teal, fontWeight = FontWeight.Bold, fontSize = 27.sp) }; Spacer(Modifier.height(18.dp)); Text("Для планирования прыжка сверяйся с приборами, погодой и правилами своей дропзоны.", color = Muted, fontSize = 12.sp, lineHeight = 18.sp) } }
 
 @Composable
-private fun AuthScreen(auth: SupabaseAuth, onSuccess: (AuthSession, String?) -> Unit) {
-    var register by remember { mutableStateOf(false) }
-    var passwordVisible by remember(register) { mutableStateOf(false) }
-    var confirmationVisible by remember(register) { mutableStateOf(false) }
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var confirmPassword by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
+private fun AuthScreen(auth: SupabaseAuth, form: AuthFormState, scope: kotlinx.coroutines.CoroutineScope, onSuccess: (AuthSession, String?) -> Unit) {
+    var register by form::register
+    var passwordVisible by form::passwordVisible
+    var confirmationVisible by form::confirmationVisible
+    var username by form::username
+    var password by form::password
+    var confirmPassword by form::confirmPassword
+    var busy by form::busy
+    var error by form::error
     Column(Modifier.fillMaxSize().background(Paper).verticalScroll(rememberScrollState()).statusBarsPadding().navigationBarsPadding().padding(20.dp), verticalArrangement = Arrangement.Center) {
         Text("BLUE SKY", color = Teal, fontSize = 12.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(12.dp))
@@ -239,7 +241,7 @@ private fun AuthScreen(auth: SupabaseAuth, onSuccess: (AuthSession, String?) -> 
                     try {
                         val result = withContext(Dispatchers.IO) { if (register) auth.signUp(address, password) else auth.signIn(address, password) }
                         val warning = withContext(Dispatchers.IO) { try { auth.savePasswordCopy(result, password); null } catch (_: Exception) { "Пароль не сохранился в таблице. Проверь что обновлённый SQL выполнен и войди в аккаунт ещё раз" } }
-                        password = ""; onSuccess(result, warning)
+                        form.clearSecrets(); onSuccess(result, warning)
                     }
                     catch (e: AuthException) { error = e.message }
                     catch (_: Exception) { error = "Не получилось подключиться. Проверь интернет и попробуй ещё раз" }
@@ -247,7 +249,7 @@ private fun AuthScreen(auth: SupabaseAuth, onSuccess: (AuthSession, String?) -> 
                 } }
             }
         }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(11.dp)) { Text(if (busy) "Загрузка..." else if (register) "Зарегистрироваться" else "Войти") }
-        TextButton(onClick = { register = !register; confirmPassword = ""; error = null }, enabled = !busy, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text(if (register) "Уже есть аккаунт? Войти" else "Нет аккаунта? Зарегистрироваться") }
+        TextButton(onClick = { register = !register; confirmPassword = ""; passwordVisible = false; confirmationVisible = false; error = null }, enabled = !busy, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text(if (register) "Уже есть аккаунт? Войти" else "Нет аккаунта? Зарегистрироваться") }
     }
 }
 

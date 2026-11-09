@@ -1,5 +1,6 @@
 -- Сначала должен быть выполнен supabase-profile.sql.
 -- Выполни этот скрипт в SQL Editor проекта Supabase.
+-- Затем выполни supabase-chat-antispam.sql для отправки сообщений.
 begin;
 
 create table if not exists public.chat_messages (
@@ -12,9 +13,9 @@ create index if not exists chat_messages_created_idx on public.chat_messages (cr
 create index if not exists chat_messages_author_idx on public.chat_messages (author_id);
 alter table public.chat_messages enable row level security;
 revoke all on public.chat_messages from public, anon, authenticated;
+revoke insert (id, author_id, body, created_at) on public.chat_messages from public, anon, authenticated;
 revoke update (id, author_id, body, created_at) on public.chat_messages from public, anon, authenticated;
 grant select on public.chat_messages to authenticated;
-grant insert (body) on public.chat_messages to authenticated;
 
 drop policy if exists "Read chat messages" on public.chat_messages;
 create policy "Read chat messages" on public.chat_messages

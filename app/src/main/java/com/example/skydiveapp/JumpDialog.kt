@@ -17,14 +17,14 @@ import java.util.Locale
 import java.util.UUID
 
 @Composable
-internal fun JumpDialog(initial: Jump?, onDismiss: () -> Unit, saving: Boolean, error: String?, onSave: (Jump) -> Unit) {
-    var date by remember(initial?.id) { mutableStateOf(initial?.date ?: SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())) }
-    var location by remember(initial?.id) { mutableStateOf(initial?.location ?: "") }
-    var altitude by remember(initial?.id) { mutableStateOf(initial?.altitude ?: "") }
-    var discipline by remember(initial?.id) { mutableStateOf(initial?.discipline ?: "") }
-    var notes by remember(initial?.id) { mutableStateOf(initial?.notes ?: "") }
-    var freefall by remember(initial?.id) { mutableStateOf(initial?.freefallSeconds?.toString() ?: "") }
-    var attempted by remember(initial?.id) { mutableStateOf(false) }
+internal fun JumpDialog(initial: Jump?, draft: JumpDraft, onDismiss: () -> Unit, saving: Boolean, error: String?, onSave: (Jump) -> Unit) {
+    var date by draft::date
+    var location by draft::location
+    var altitude by draft::altitude
+    var discipline by draft::discipline
+    var notes by draft::notes
+    var freefall by draft::freefall
+    var attempted by draft::attempted
     val validDate = parseJumpDate(date) != null
     val validAltitude = altitude.isBlank() || altitude.trim().replace(',', '.').toDoubleOrNull()?.let { it.isFinite() && it > 0 } == true
     val validFreefall = freefall.isBlank() || freefall.toIntOrNull()?.let { it in 0..86400 } == true
@@ -46,7 +46,7 @@ internal fun JumpDialog(initial: Jump?, onDismiss: () -> Unit, saving: Boolean, 
         confirmButton = { TextButton(enabled = !saving, onClick = {
             attempted = true
             if (validDate && location.isNotBlank() && validAltitude && validFreefall) {
-                onSave(Jump(initial?.id ?: UUID.randomUUID().toString(), date.trim(), location.trim(), altitude.trim(), discipline.trim(), notes.trim(), freefall.takeIf { it.isNotBlank() }?.toInt()))
+                onSave(Jump(draft.id, date.trim(), location.trim(), altitude.trim(), discipline.trim(), notes.trim(), freefall.takeIf { it.isNotBlank() }?.toInt()))
             }
         }) { Text(if (saving) "Сохраняем..." else "Сохранить") } },
         dismissButton = { TextButton(enabled = !saving, onClick = onDismiss) { Text("Отмена") } }
