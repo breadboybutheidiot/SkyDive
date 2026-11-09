@@ -5,12 +5,15 @@ import android.os.SystemClock
 import android.util.Base64
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -45,6 +48,7 @@ internal fun ChatScreen(store: JumpStore, modifier: Modifier = Modifier) {
     var sending by remember { mutableStateOf(false) }
     var scrollAfterSend by remember { mutableStateOf(false) }
     var refresh by remember { mutableIntStateOf(0) }
+    var selectedAuthor by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
@@ -80,7 +84,7 @@ internal fun ChatScreen(store: JumpStore, modifier: Modifier = Modifier) {
             if (!loaded && error == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
             else if (messages.isEmpty() && error == null) Text("Сообщений пока нет", modifier = Modifier.align(Alignment.Center), color = ChatMuted, fontSize = 14.sp)
             else LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(messages, key = { it.id }) { message -> ChatMessageRow(message, message.authorId?.let { authors[it] }) }
+                items(messages, key = { it.id }) { message -> ChatMessageRow(message, message.authorId?.let { authors[it] }) { selectedAuthor = it } }
             }
         }
         if (error != null) {
@@ -108,10 +112,11 @@ internal fun ChatScreen(store: JumpStore, modifier: Modifier = Modifier) {
             }, enabled = !sending && draft.isNotBlank(), shape = RoundedCornerShape(11.dp), contentPadding = PaddingValues(horizontal = 12.dp)) { Text(if (sending) "..." else "Отправить") }
         }
     }
+    selectedAuthor?.let { authorId -> ChatProfileDialog(store, authorId) { selectedAuthor = null } }
 }
 
 @Composable
-private fun ChatMessageRow(message: ChatMessage, author: ChatAuthor?) {
+private fun ChatMessageRow(message: ChatMessage, author: ChatAuthor?, onProfileClick: (String) -> Unit) {
     val name = author?.name?.takeIf { it.isNotBlank() } ?: "Участник"
     val image = remember(author?.photo) {
         try {
@@ -120,15 +125,60 @@ private fun ChatMessageRow(message: ChatMessage, author: ChatAuthor?) {
         } catch (_: Exception) { null }
     }
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(11.dp)).background(ChatCard).padding(12.dp), verticalAlignment = Alignment.Top) {
-        Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFDFE4FA)), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFDFE4FA)).then(if (message.authorId != null) Modifier.clickable { onProfileClick(message.authorId) } else Modifier), contentAlignment = Alignment.Center) {
             if (image != null) Image(image, contentDescription = "Фото $name", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             else Text(name.firstOrNull()?.uppercase() ?: "?", color = ChatAccent, fontSize = 18.sp)
         }
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text(name, color = ChatInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(name, modifier = if (message.authorId != null) Modifier.clickable { onProfileClick(message.authorId) } else Modifier, color = ChatInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(4.dp))
             Text(message.body, color = ChatInk, fontSize = 14.sp)
         }
     }
+}
+
+@Composable
+private fun ChatProfileDialog(store: JumpStore, authorId: String, onDismiss: () -> Unit) {
+    var profile by remember(authorId) { mutableStateOf<PublicProfile?>(null) }
+    var error by remember(authorId) { mutableStateOf<String?>(null) }
+    var retry by remember(authorId) { mutableIntStateOf(0) }
+    LaunchedEffect(authorId, retry) {
+        profile = null
+        error = null
+        try { profile = withContext(Dispatchers.IO) { store.loadPublicProfile(authorId) } }
+        catch (e: CancellationException) { throw e }
+        catch (e: Exception) { error = if (e is AuthException) e.message else "Не получилось загрузить профиль" }
+    }
+    val image = remember(profile?.photo) {
+        try { profile?.photo?.takeIf { it.isNotBlank() }?.let { Base64.decode(it, Base64.DEFAULT) }?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }?.asImageBitmap() }
+        catch (_: Exception) { null }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Профиль") },
+        text = {
+            when {
+                error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
+                profile == null -> CircularProgressIndicator()
+                else -> {
+                    val current = profile!!
+                    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(Modifier.size(88.dp).clip(CircleShape).background(Color(0xFFDFE4FA)), contentAlignment = Alignment.Center) {
+                            if (image != null) Image(image, contentDescription = "Фото профиля", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                            else Text(current.name.firstOrNull()?.uppercase() ?: "?", color = ChatAccent, fontSize = 32.sp)
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text(current.name, fontSize = 20.sp, fontWeight = FontWeight.Medium, color = ChatInk)
+                        Spacer(Modifier.height(16.dp))
+                        Text("Прыжков: ${current.jumpCount}", color = ChatInk)
+                        Spacer(Modifier.height(6.dp))
+                        Text("Свободное падение: ${formatFreefall(current.freefallSeconds)}", color = ChatInk)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
+        dismissButton = { if (error != null) TextButton(onClick = { retry++ }) { Text("Повторить") } }
+    )
 }

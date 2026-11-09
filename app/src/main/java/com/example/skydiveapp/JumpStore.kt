@@ -5,10 +5,11 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-internal data class Jump(val id: String, val date: String, val location: String, val altitude: String, val discipline: String, val notes: String)
+internal data class Jump(val id: String, val date: String, val location: String, val altitude: String, val discipline: String, val notes: String, val freefallSeconds: Int? = null)
 internal data class Profile(val name: String, val photo: String?)
 internal data class ChatMessage(val id: String, val authorId: String?, val body: String, val createdAt: String)
 internal data class ChatAuthor(val id: String, val name: String, val photo: String?)
+internal data class PublicProfile(val name: String, val photo: String?, val jumpCount: Long, val freefallSeconds: Long?)
 
 internal class JumpStore(private val auth: SupabaseAuth) {
     private fun request(method: String, query: String, body: JSONObject? = null, table: String = "jumps", upsert: Boolean = false): String {
@@ -42,11 +43,17 @@ internal class JumpStore(private val auth: SupabaseAuth) {
             return result
         } finally { connection.disconnect() }
     }
-    private fun parse(json: JSONObject) = Jump(json.getString("id"), json.getString("jump_date"), json.getString("location"), json.optString("altitude"), json.optString("discipline"), json.optString("notes"))
-    fun list(): List<Jump> { val array = JSONArray(request("GET", "?select=id,jump_date,location,altitude,discipline,notes&order=created_at.desc")); return (0 until array.length()).map { parse(array.getJSONObject(it)) } }
+    private fun parse(json: JSONObject) = Jump(json.getString("id"), json.getString("jump_date"), json.getString("location"), json.optString("altitude"), json.optString("discipline"), json.optString("notes"), if (json.isNull("freefall_seconds")) null else json.getInt("freefall_seconds"))
+    fun list(): List<Jump> { val array = JSONArray(request("GET", "?select=id,jump_date,location,altitude,discipline,notes,freefall_seconds&order=created_at.desc")); return (0 until array.length()).map { parse(array.getJSONObject(it)) } }
     fun add(jump: Jump): Jump {
-        val body = JSONObject().put("id", jump.id).put("jump_date", jump.date).put("location", jump.location).put("altitude", jump.altitude).put("discipline", jump.discipline).put("notes", jump.notes)
+        val body = JSONObject().put("id", jump.id).put("jump_date", jump.date).put("location", jump.location).put("altitude", jump.altitude).put("discipline", jump.discipline).put("notes", jump.notes).put("freefall_seconds", jump.freefallSeconds ?: JSONObject.NULL)
         return parse(JSONArray(request("POST", "", body)).getJSONObject(0))
+    }
+    fun update(jump: Jump): Jump {
+        val body = JSONObject().put("jump_id", jump.id).put("new_date", jump.date).put("new_location", jump.location)
+            .put("new_altitude", jump.altitude).put("new_discipline", jump.discipline).put("new_notes", jump.notes)
+            .put("new_freefall_seconds", jump.freefallSeconds ?: JSONObject.NULL)
+        return parse(JSONObject(request("POST", "", body, table = "rpc/update_own_jump")))
     }
     fun delete(jump: Jump) { val rows = JSONArray(request("DELETE", "?id=eq.${jump.id}&select=id")); if (rows.length() != 1) throw AuthException("Не получилось удалить запись. Обнови журнал и попробуй снова") }
     fun loadProfile(): Profile? {
@@ -77,6 +84,12 @@ internal class JumpStore(private val auth: SupabaseAuth) {
     }
     fun sendMessage(body: String) {
         request("POST", "", JSONObject().put("body", body), table = "chat_messages")
+    }
+    fun loadPublicProfile(authorId: String): PublicProfile {
+        val rows = JSONArray(request("POST", "", JSONObject().put("profile_user_id", authorId), table = "rpc/chat_public_profile"))
+        if (rows.length() == 0) throw AuthException("Профиль недоступен")
+        val item = rows.getJSONObject(0)
+        return PublicProfile(item.optString("display_name", "Участник"), if (item.isNull("photo_base64")) null else item.optString("photo_base64"), item.getLong("jump_count"), if (item.isNull("freefall_seconds")) null else item.getLong("freefall_seconds"))
     }
     fun loadChecks(count: Int): List<Boolean> {
         val rows = JSONArray(request("GET", "?select=checked", table = "equipment_checklists"))

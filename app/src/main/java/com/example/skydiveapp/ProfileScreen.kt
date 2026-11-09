@@ -85,6 +85,7 @@ internal fun ProfileScreen(store: JumpStore, jumps: List<Jump>, statsAvailable: 
     val maxAltitude = remember(jumps.toList()) {
         jumps.mapNotNull { it.altitude.replace(',', '.').toDoubleOrNull()?.takeIf { value -> value.isFinite() && value > 0 } }.maxOrNull()
     }
+    val statistics = calculateJumpStatistics(jumps.toList())
     val isBusy = loading || saving || picking
     val isDirty = initial != null && (name.trim() != initial!!.name || photo != initial!!.photo)
 
@@ -131,8 +132,17 @@ internal fun ProfileScreen(store: JumpStore, jumps: List<Jump>, statsAvailable: 
             ProfileStatistic("Прыжков", if (statsAvailable) jumps.size.toString() else "Нет данных", Modifier.weight(1f))
             ProfileStatistic("Макс. высота", if (statsAvailable) maxAltitude?.let { "${String.format(Locale.getDefault(), "%.0f", it)} м" } ?: "Нет данных" else "Нет данных", Modifier.weight(1f))
         }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            ProfileStatistic("За этот месяц", if (statsAvailable) statistics.thisMonth.toString() else "Нет данных", Modifier.weight(1f))
+            ProfileStatistic("За этот год", if (statsAvailable) statistics.thisYear.toString() else "Нет данных", Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(10.dp))
+        ProfileStatistic("Свободное падение", if (statsAvailable) formatFreefall(statistics.totalFreefallSeconds) else "Нет данных", Modifier.fillMaxWidth())
+        Spacer(Modifier.height(10.dp))
+        ProfileStatistic("Чаще всего", if (statsAvailable) statistics.favoriteLocation ?: "Нет данных" else "Нет данных", Modifier.fillMaxWidth())
         Spacer(Modifier.height(16.dp))
-        Text("Статистика по записям в журнале", color = ProfileMuted, fontSize = 12.sp)
+        Text("Статистика по записям в журнале. Время считается по прыжкам, где оно указано", color = ProfileMuted, fontSize = 12.sp)
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = onSignOut) { Text("Выйти из аккаунта") }
     }
