@@ -11,6 +11,7 @@ import androidx.activity.compose.setContent
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -34,6 +35,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -144,7 +146,7 @@ private fun HomeScreen(jumps: List<Jump>, add: () -> Unit, navigate: (Int) -> Un
         Spacer(Modifier.height(20.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Column { Text("BLUE SKY", color = Teal, fontSize = 10.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.sp); Spacer(Modifier.height(5.dp)); Text("Главная", color = Ink, fontSize = 24.sp, fontWeight = FontWeight.Normal) }
-            Box(Modifier.size(42.dp).clip(RoundedCornerShape(20.dp)).background(Color(0xFFDFE4FA)), contentAlignment = Alignment.Center) { Text("✳", color = Teal, fontSize = 23.sp) }
+            Image(painterResource(R.drawable.skydive_icon), contentDescription = null, modifier = Modifier.size(42.dp))
         }
         Spacer(Modifier.height(20.dp))
         HeroCard(jumps.size, add)
@@ -214,7 +216,11 @@ private fun AuthScreen(auth: SupabaseAuth, form: AuthFormState, scope: kotlinx.c
     var busy by form::busy
     var error by form::error
     Column(Modifier.fillMaxSize().background(Paper).verticalScroll(rememberScrollState()).statusBarsPadding().navigationBarsPadding().padding(20.dp), verticalArrangement = Arrangement.Center) {
-        Text("BLUE SKY", color = Teal, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Image(painterResource(R.drawable.skydive_icon), contentDescription = null, modifier = Modifier.size(32.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("BLUE SKY", color = Teal, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        }
         Spacer(Modifier.height(12.dp))
         Text(if (register) "Регистрация" else "Вход", color = Ink, fontSize = 26.sp)
         Spacer(Modifier.height(6.dp))
