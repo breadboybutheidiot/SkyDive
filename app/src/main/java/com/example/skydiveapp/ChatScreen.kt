@@ -22,6 +22,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -33,15 +35,16 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val ChatInk = Color(0xFF1C1B20)
-private val ChatMuted = Color(0xFF56545F)
-private val ChatCard = Color(0xFFE2E2EC)
-private val ChatAccent = Color(0xFF454A65)
+private val ChatInk: Color @Composable get() = MaterialTheme.colorScheme.onSurface
+private val ChatMuted: Color @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
+private val ChatCard: Color @Composable get() = MaterialTheme.colorScheme.surface
+private val ChatAccent: Color @Composable get() = MaterialTheme.colorScheme.primary
 
 @Composable
 internal fun ChatScreen(store: JumpStore, model: AppSessionViewModel, modifier: Modifier = Modifier) {
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var authors by remember { mutableStateOf<Map<String, ChatAuthor>>(emptyMap()) }
+    var permissions by remember { mutableStateOf<ChatPermissions?>(null) }
     var loaded by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var draft by model::chatDraft
@@ -52,6 +55,11 @@ internal fun ChatScreen(store: JumpStore, model: AppSessionViewModel, modifier: 
     var scrollAfterSend by remember { mutableStateOf(false) }
     var refresh by remember { mutableIntStateOf(0) }
     var selectedAuthor by remember { mutableStateOf<String?>(null) }
+    var editingMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    var editDraft by remember { mutableStateOf("") }
+    var deletingMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    var actionBusy by remember { mutableStateOf(false) }
+    var actionError by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
     val scope = model.scope
 
@@ -66,6 +74,7 @@ internal fun ChatScreen(store: JumpStore, model: AppSessionViewModel, modifier: 
         var lastProfileUpdate = 0L
         while (currentCoroutineContext().isActive) {
             try {
+                if (permissions == null) permissions = withContext(Dispatchers.IO) { store.chatPermissions() }
                 val newMessages = withContext(Dispatchers.IO) { store.loadMessages() }
                 val authorIds = newMessages.mapNotNull { it.authorId }.toSet()
                 val now = SystemClock.elapsedRealtime()
@@ -94,7 +103,16 @@ internal fun ChatScreen(store: JumpStore, model: AppSessionViewModel, modifier: 
             if (!loaded && error == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
             else if (messages.isEmpty() && error == null) Text("Сообщений пока нет", modifier = Modifier.align(Alignment.Center), color = ChatMuted, fontSize = 14.sp)
             else LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(messages, key = { it.id }) { message -> ChatMessageRow(message, message.authorId?.let { authors[it] }) { selectedAuthor = it } }
+                items(messages, key = { it.id }) { message ->
+                    val own = message.authorId != null && message.authorId == permissions?.userId
+                    ChatMessageRow(
+                        message, message.authorId?.let { authors[it] },
+                        canEdit = own, canDelete = own || permissions?.isAdmin == true,
+                        onProfileClick = { selectedAuthor = it },
+                        onEdit = { editingMessage = message; editDraft = message.body; actionError = null },
+                        onDelete = { deletingMessage = message; actionError = null }
+                    )
+                }
             }
         }
         if (error != null) {
@@ -125,14 +143,68 @@ internal fun ChatScreen(store: JumpStore, model: AppSessionViewModel, modifier: 
                         finally { sending = false }
                     }
                 }
-            }, enabled = !sending && secondsLeft == 0 && draft.isNotBlank(), shape = RoundedCornerShape(11.dp), contentPadding = PaddingValues(horizontal = 12.dp)) { Text(if (sending) "..." else "Отправить") }
+            }, enabled = !sending && secondsLeft == 0 && draft.isNotBlank(), shape = RoundedCornerShape(11.dp), contentPadding = PaddingValues(horizontal = 12.dp)) { LoadingLabel(sending, "Отправить", "Отправка") }
         }
     }
     selectedAuthor?.let { authorId -> ChatProfileDialog(store, authorId) { selectedAuthor = null } }
+    editingMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { if (!actionBusy) { editingMessage = null; actionError = null } },
+            title = { Text("Изменить сообщение") },
+            text = {
+                Column {
+                    OutlinedTextField(value = editDraft, onValueChange = { if (it.length <= 500) editDraft = it; actionError = null },
+                        modifier = Modifier.fillMaxWidth(), label = { Text("Сообщение") }, enabled = !actionBusy, maxLines = 6)
+                    if (actionError != null) Text(actionError!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !actionBusy && editDraft.isNotBlank(), onClick = {
+                    actionBusy = true
+                    scope.launch {
+                        try {
+                            withContext(Dispatchers.IO) { store.editMessage(message.id, editDraft.trim()) }
+                            editingMessage = null; actionError = null; refresh++
+                        } catch (e: CancellationException) { throw e }
+                        catch (e: Exception) { actionError = if (e is AuthException) e.message else "Не получилось изменить сообщение. Проверь интернет" }
+                        finally { actionBusy = false }
+                    }
+                }) { LoadingLabel(actionBusy, "Сохранить", "Сохраняем...") }
+            },
+            dismissButton = { TextButton(enabled = !actionBusy, onClick = { editingMessage = null; actionError = null }) { Text("Отмена") } }
+        )
+    }
+    deletingMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { if (!actionBusy) { deletingMessage = null; actionError = null } },
+            title = { Text("Удалить сообщение?") },
+            text = {
+                Column {
+                    Text("Сообщение исчезнет у всех")
+                    if (actionError != null) Text(actionError!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !actionBusy, onClick = {
+                    actionBusy = true
+                    scope.launch {
+                        try {
+                            withContext(Dispatchers.IO) { store.deleteMessage(message.id) }
+                            deletingMessage = null; actionError = null; refresh++
+                        } catch (e: CancellationException) { throw e }
+                        catch (e: Exception) { actionError = if (e is AuthException) e.message else "Не получилось удалить сообщение. Проверь интернет" }
+                        finally { actionBusy = false }
+                    }
+                }) { LoadingLabel(actionBusy, "Удалить", "Удаляем...") }
+            },
+            dismissButton = { TextButton(enabled = !actionBusy, onClick = { deletingMessage = null; actionError = null }) { Text("Отмена") } }
+        )
+    }
 }
 
 @Composable
-private fun ChatMessageRow(message: ChatMessage, author: ChatAuthor?, onProfileClick: (String) -> Unit) {
+internal fun ChatMessageRow(message: ChatMessage, author: ChatAuthor?, canEdit: Boolean, canDelete: Boolean, onProfileClick: (String) -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
+    var menuOpen by remember { mutableStateOf(false) }
     val name = author?.name?.takeIf { it.isNotBlank() } ?: "Участник"
     val image = remember(author?.photo) {
         try {
@@ -141,7 +213,7 @@ private fun ChatMessageRow(message: ChatMessage, author: ChatAuthor?, onProfileC
         } catch (_: Exception) { null }
     }
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(11.dp)).background(ChatCard).padding(12.dp), verticalAlignment = Alignment.Top) {
-        Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFDFE4FA)).then(if (message.authorId != null) Modifier.clickable { onProfileClick(message.authorId) } else Modifier), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondaryContainer).then(if (message.authorId != null) Modifier.clickable { onProfileClick(message.authorId) } else Modifier), contentAlignment = Alignment.Center) {
             if (image != null) Image(image, contentDescription = "Фото $name", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             else Text(name.firstOrNull()?.uppercase() ?: "?", color = ChatAccent, fontSize = 18.sp)
         }
@@ -150,6 +222,21 @@ private fun ChatMessageRow(message: ChatMessage, author: ChatAuthor?, onProfileC
             Text(name, modifier = if (message.authorId != null) Modifier.clickable { onProfileClick(message.authorId) } else Modifier, color = ChatInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(4.dp))
             Text(message.body, color = ChatInk, fontSize = 14.sp)
+            if (message.editedAt != null) {
+                Spacer(Modifier.height(4.dp))
+                Text("изменено", color = ChatMuted, fontSize = 11.sp)
+            }
+        }
+        if (canEdit || canDelete) {
+            Box {
+                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(32.dp)) {
+                    Text("⋮", color = ChatMuted, fontSize = 22.sp, modifier = Modifier.semantics { contentDescription = "Действия с сообщением" })
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    if (canEdit) DropdownMenuItem(text = { Text("Изменить") }, onClick = { menuOpen = false; onEdit() })
+                    if (canDelete) DropdownMenuItem(text = { Text("Удалить") }, onClick = { menuOpen = false; onDelete() })
+                }
+            }
         }
     }
 }
@@ -180,7 +267,7 @@ private fun ChatProfileDialog(store: JumpStore, authorId: String, onDismiss: () 
                 else -> {
                     val current = profile!!
                     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(Modifier.size(88.dp).clip(CircleShape).background(Color(0xFFDFE4FA)), contentAlignment = Alignment.Center) {
+                        Box(Modifier.size(88.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
                             if (image != null) Image(image, contentDescription = "Фото профиля", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                             else Text(current.name.firstOrNull()?.uppercase() ?: "?", color = ChatAccent, fontSize = 32.sp)
                         }

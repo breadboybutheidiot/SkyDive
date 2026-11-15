@@ -4,12 +4,14 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.AtomicFile
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 internal data class AuthSession(val accessToken: String, val refreshToken: String, val email: String, val expiresAt: Long)
@@ -19,13 +21,54 @@ internal class SupabaseAuth(private val context: Context) {
     private val base = "https://owfsmpsqbwsguejtnyng.supabase.co/auth/v1"
     private val publicKey = "sb_publishable_mkFFIi3vQfyPngWlQiLwCg_IiaqJaLt"
     @Volatile private var activeSession: AuthSession? = null
-    init { context.noBackupFilesDir.resolve("auth_session").delete() }
-    fun save(session: AuthSession) { activeSession = session }
-    fun load(): AuthSession? = activeSession
-    fun clear() { activeSession = null }
+    private val sessionFile = AtomicFile(context.noBackupFilesDir.resolve("auth_session"))
+    private val keyAlias = "skydive_session_key"
+
+    private fun sessionKey(create: Boolean): SecretKey? {
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (store.getKey(keyAlias, null) as? SecretKey)?.let { return it }
+        if (!create) return null
+        return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
+            init(KeyGenParameterSpec.Builder(keyAlias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .build())
+        }.generateKey()
+    }
+
+    @Synchronized fun save(session: AuthSession) {
+        val json = JSONObject().put("access_token", session.accessToken).put("refresh_token", session.refreshToken)
+            .put("email", session.email).put("expires_at", session.expiresAt)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, sessionKey(true))
+        val encrypted = cipher.doFinal(json.toString().toByteArray(Charsets.UTF_8))
+        val data = JSONObject().put("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+            .put("data", Base64.encodeToString(encrypted, Base64.NO_WRAP)).toString().toByteArray(Charsets.UTF_8)
+        val stream = sessionFile.startWrite()
+        try { stream.write(data); sessionFile.finishWrite(stream) }
+        catch (e: Exception) { sessionFile.failWrite(stream); throw e }
+        activeSession = session
+    }
+
+    @Synchronized fun load(): AuthSession? {
+        activeSession?.let { return it }
+        if (!sessionFile.baseFile.exists()) return null
+        return try {
+            val key = sessionKey(false) ?: throw IllegalStateException("Ключ сессии недоступен")
+            val encrypted = JSONObject(sessionFile.openRead().bufferedReader().use { it.readText() })
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, Base64.decode(encrypted.getString("iv"), Base64.NO_WRAP)))
+            val data = JSONObject(String(cipher.doFinal(Base64.decode(encrypted.getString("data"), Base64.NO_WRAP)), Charsets.UTF_8))
+            AuthSession(data.getString("access_token"), data.getString("refresh_token"), data.getString("email"), data.getLong("expires_at"))
+                .also { activeSession = it }
+        } catch (_: Exception) { clear(); null }
+    }
+    @Synchronized fun clear() { activeSession = null; sessionFile.delete() }
     @Synchronized fun currentSession(): AuthSession {
-        val current = activeSession ?: throw AuthException("Войди в аккаунт ещё раз")
-        return if (current.expiresAt <= System.currentTimeMillis() / 1000 + 60) refresh(current) else current
+        val current = activeSession ?: throw AuthException("Войди в аккаунт ещё раз", invalidSession = true)
+        return if (current.expiresAt <= System.currentTimeMillis() / 1000 + 60) {
+            try { refresh(current) } catch (e: AuthException) { if (e.invalidSession) clear(); throw e }
+        } else current
     }
 
     private fun request(path: String, body: JSONObject, token: String? = null): JSONObject {
@@ -51,9 +94,9 @@ internal class SupabaseAuth(private val context: Context) {
                     "weak_password" -> "Пароль слишком простой, попробуй другой"
                     "over_email_send_rate_limit" -> "Supabase ограничил отправку писем. Отключи Confirm email в настройках Email и попробуй позже"
                     "over_request_rate_limit" -> "Supabase временно ограничил запросы с этой сети. Подожди несколько минут и попробуй снова"
-                    "refresh_token_not_found", "refresh_token_already_used" -> "Сессия закончилась, войди снова"
+                    "refresh_token_not_found", "refresh_token_already_used", "session_not_found", "user_not_found" -> "Сессия закончилась, войди снова"
                     else -> "Ошибка авторизации: ${code.ifBlank { "HTTP $status" }}. Проверь настройки Supabase"
-                }, code == "refresh_token_not_found" || code == "refresh_token_already_used")
+                }, code in setOf("refresh_token_not_found", "refresh_token_already_used", "session_not_found", "user_not_found"))
             }
             return json
         } finally { connection.disconnect() }
@@ -81,5 +124,5 @@ internal class SupabaseAuth(private val context: Context) {
             if (response.trim() != "true") throw AuthException("Запись в таблице не найдена")
         } finally { connection.disconnect() }
     }
-    fun signOut(session: AuthSession) { try { request("/logout", JSONObject(), session.accessToken) } finally { clear() } }
+    fun signOut(session: AuthSession) { clear(); request("/logout", JSONObject(), session.accessToken) }
 }
